@@ -7,7 +7,7 @@ MASTER_PORT=29411
 
 # Arrays of tasks and generation lengths
 TASKS=("countdown" "sudoku" "math" "gsm8k")
-GEN_LENGTHS=(128 256)
+GEN_LENGTHS=(128 512)
 
 # Set GPU IDs from command line if provided
 if [ $# -gt 0 ]; then
@@ -41,7 +41,7 @@ for task in "${TASKS[@]}"; do
       --batch_size $batch_size \
       --gen_length $gen_length \
       --output_dir "eval_results" \
-      --model_path "/data0/shared/LLaDA-8B-Instruct/"
+      --model_path "/shared/LLaDA-8B-Instruct"
   done
 done
 

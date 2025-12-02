@@ -1,10 +1,11 @@
 #!/bin/bash
+
 export LOGDIR=checkpoints
 mkdir -p $LOGDIR
 
-DATASET="sudoku"
+DATASET="gsm8k"
 RUN_NAME=${DATASET}_base_bs12
-MODEL_PATH=/data0/shared/LLaDA-8B-Instruct
+MODEL_PATH=/shared/LLaDA-8B-Instruct
 NUM_ITER=12 # number of policy gradient inner updates iterations
 
 accelerate launch \
@@ -16,3 +17,4 @@ accelerate launch \
     --dataset $DATASET \
     --run_name $RUN_NAME \
     --output_dir checkpoints/$RUN_NAME 
+

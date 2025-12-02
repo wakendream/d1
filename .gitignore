@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+wandb/
+checkpoints/
+eval/eval_results/
+*.ipynb_checkpoints
