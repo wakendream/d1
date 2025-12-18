@@ -130,3 +130,17 @@ def get_math_questions(split="train") -> Dataset:
         }
     )  # type: ignore
     return data  # type: ignore
+
+def get_humaneval_questions(split="train") -> Dataset:
+    data = load_dataset("Anthropic/humaneval", split=split)
+    return data.map(
+        lambda x: {
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": f"{SYSTEM_PROMPT}\n\nYou are given a function signature and a docstring describing its behavior. Write the complete function implementation in Python. Make sure to include any necessary imports and helper functions.\n\nFunction signature:\n{x['function_signature']}\n\nDocstring:\n{x['docstring']}",
+                },
+            ],
+            "solution": x["canonical_solution"],
+        }
+    )
