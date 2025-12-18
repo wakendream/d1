@@ -131,16 +131,36 @@ def get_math_questions(split="train") -> Dataset:
     )  # type: ignore
     return data  # type: ignore
 
-def get_humaneval_questions(split="train") -> Dataset:
-    data = load_dataset("Anthropic/humaneval", split=split)
+HUMANEVAL_SYSTEM_PROMPT = """You are a Python expert. You will be given a function signature and a docstring describing its behavior. Write the complete function implementation in Python. Make sure to include any necessary imports and helper functions.
+
+Respond in the following format:
+<reasoning>
+Your reasoning here
+</reasoning>
+<code>
+Your complete function implementation
+</code>"""
+
+
+def get_humaneval_questions(split="test") -> Dataset:
+    """
+    Load HumanEval dataset for code generation.
+    Note: HumanEval only has a 'test' split, so split="train" will still load the test split.
+    """
+    data = load_dataset("openai_humaneval", split="test")  # HumanEval only has test split
     return data.map(
         lambda x: {
             "prompt": [
                 {
                     "role": "user",
-                    "content": f"{SYSTEM_PROMPT}\n\nYou are given a function signature and a docstring describing its behavior. Write the complete function implementation in Python. Make sure to include any necessary imports and helper functions.\n\nFunction signature:\n{x['function_signature']}\n\nDocstring:\n{x['docstring']}",
+                    "content": f"{HUMANEVAL_SYSTEM_PROMPT}\n\nFunction signature:\n{x['function_signature']}\n\nDocstring:\n{x['docstring']}",
                 },
             ],
             "solution": x["canonical_solution"],
+            "function_signature": x["function_signature"],
+            "docstring": x["docstring"],
+            "task_id": x.get("task_id", ""),
+            "test": x.get("test", ""),  # 添加测试用例
+            "entry_point": x.get("entry_point", "f"),  # 添加函数名
         }
     )

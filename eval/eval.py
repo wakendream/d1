@@ -18,12 +18,14 @@ from gsm8k import GSM8KDataset
 from math500 import MATH500Dataset
 from countdown import CTDDataset
 from sudoku import SudokuDataset
+from humaneval import HumanEvalDataset
 
 DATASET_MAP = {
     "gsm8k": GSM8KDataset,
     "math": MATH500Dataset,
     "countdown": CTDDataset,
     "sudoku": SudokuDataset,
+    "humaneval": HumanEvalDataset,
 }
 
 
@@ -56,6 +58,7 @@ def evaluate(
     cfg_scale=0.0,
     steps=64,
     block_length=32,
+    dataset_type="default",
 ):
     model.eval()
     total_processed = torch.tensor(0, device=model.device)
@@ -66,8 +69,6 @@ def evaluate(
     for batch in tqdm(dataloader, disable=(dist.get_rank() != 0)):
         start_time = time.time()
         input_ids = batch["input_ids"].to(device)
-        gt_answers = batch["answers"]
-        questions = batch["questions"]
         prompts = batch["prompts"]
 
         out = generate(
@@ -83,28 +84,64 @@ def evaluate(
         )
 
         generated_texts = tokenizer.batch_decode(out[:, -gen_length:], skip_special_tokens=False)
-        example_result = [
-            {
-                "question": questions[j],
-                "prompt_input": prompts[j],
-                "generations": generated_texts[j],
-                "ground_truth": gt_answers[j],
-            }
-            for j in range(len(gt_answers))
-        ]
+        
+        # Handle different dataset types
+        if dataset_type == "humaneval":
+            function_signatures = batch["function_signatures"]
+            docstrings = batch["docstrings"]
+            canonical_solutions = batch["canonical_solutions"]
+            task_ids = batch["task_ids"]
+            
+            example_result = [
+                {
+                    "task_id": task_ids[j],
+                    "function_signature": function_signatures[j],
+                    "docstring": docstrings[j],
+                    "prompt_input": prompts[j],
+                    "generations": generated_texts[j],
+                    "canonical_solution": canonical_solutions[j],
+                }
+                for j in range(len(task_ids))
+            ]
+            
+            # Print individual results
+            if dist.get_rank() == 0:
+                idx = random.randint(0, len(function_signatures) - 1)
+                print(f"Task ID: {task_ids[idx]}")
+                print(f"Function Signature: {function_signatures[idx]}")
+                print("-" * 50)
+                print("Generation:")
+                print(generated_texts[idx])
+                print("-" * 50)
+                print(f"Canonical Solution: {canonical_solutions[idx]}")
+        else:
+            # Default format for other datasets (gsm8k, math, etc.)
+            gt_answers = batch["answers"]
+            questions = batch["questions"]
+            
+            example_result = [
+                {
+                    "question": questions[j],
+                    "prompt_input": prompts[j],
+                    "generations": generated_texts[j],
+                    "ground_truth": gt_answers[j],
+                }
+                for j in range(len(gt_answers))
+            ]
+            
+            # Print individual results
+            if dist.get_rank() == 0:
+                idx = random.randint(0, len(questions) - 1)
+                print(f"Question: {questions[idx]}")
+                print("-" * 50)
+                print("Generation:")
+                print(generated_texts[idx])
+                print("-" * 50)
+                print(f"Ground truth: {gt_answers[idx]}")
+        
         all_generations.extend(example_result)
         total_processed += len(generated_texts)
         wall_times.append(time.time() - start_time)
-
-        # Print individual results
-        if dist.get_rank() == 0:
-            idx = random.randint(0, len(questions) - 1)
-            print(f"Question: {questions[idx]}")
-            print("-" * 50)
-            print("Generation:")
-            print(generated_texts[idx])
-            print("-" * 50)
-            print(f"Ground truth: {gt_answers[idx]}")
 
     avg_wall_time = sum(wall_times) / len(wall_times)
     metrics = {
@@ -179,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--few_shot", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument(
-        "--dataset", type=str, choices=["gsm8k", "math", "countdown", "sudoku", "game24"], default="gsm8k"
+        "--dataset", type=str, choices=["gsm8k", "math", "countdown", "sudoku", "game24", "humaneval"], default="gsm8k"
     )
     parser.add_argument("--suffix", type=str, default="")
     parser.add_argument("--checkpoint_path", type=str, default="")
@@ -193,7 +230,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     args.diffusion_steps = args.gen_length // 2
-    num_evals = {"gsm8k": -1, "math": -1, "countdown": 256, "sudoku": 256}
+    num_evals = {"gsm8k": -1, "math": -1, "countdown": 256, "sudoku": 256, "humaneval": -1}
 
     model = AutoModel.from_pretrained(args.model_path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(
         local_rank
@@ -242,6 +279,7 @@ if __name__ == "__main__":
     filename = f"{args.output_dir}/{args.dataset}_{model_name}_{args.gen_length}_{args.diffusion_steps}_{dist.get_rank()}_generations.json"
     print(f"Saving generations to {filename}")
 
+    dataset_type = "humaneval" if args.dataset == "humaneval" else "default"
     metrics = evaluate(
         model,
         tokenizer,
@@ -249,6 +287,7 @@ if __name__ == "__main__":
         gen_length=args.gen_length,
         block_length=args.block_length,
         steps=args.diffusion_steps,
+        dataset_type=dataset_type,
     )
 
     if not args.dont_save:

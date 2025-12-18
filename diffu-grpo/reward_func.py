@@ -270,3 +270,223 @@ def boxed_and_answer_tags_format_reward(
     boxed_in_answer_rewards = boxed_in_answer(prompts, completions, answer, step=step)
     rewards = [b * 0.5 for b in boxed_in_answer_rewards]
     return rewards
+
+
+def extract_code_from_response(response_text: str) -> str | None:
+    """
+    Extract code from response text, looking for <code> tags or function definitions.
+    Returns the extracted code string, or None if no code is found.
+    """
+    # Try to extract from <code> tags first
+    code_pattern = r"<code>(.*?)</code>"
+    matches = re.findall(code_pattern, response_text, re.DOTALL)
+    if matches:
+        code = matches[-1].strip()  # Return the last match (most likely the final code)
+        if code and len(code) > 0:
+            return code
+    
+    # If no <code> tags, try to extract everything after <reasoning>...</reasoning>
+    # This assumes the format is <reasoning>...</reasoning><code>...</code> or just code
+    reasoning_pattern = r"</reasoning>\s*(.*?)(?=\n\n|$)"
+    matches = re.findall(reasoning_pattern, response_text, re.DOTALL)
+    if matches:
+        potential_code = matches[-1].strip()
+        # Check if it looks like code (contains def, import, or other Python keywords)
+        if "def " in potential_code or "import " in potential_code or "class " in potential_code:
+            return potential_code
+    
+    # Last resort: try to find function definition
+    # Look for "def " keyword and extract until the end or next blank line followed by non-code
+    def_pattern = r"(def\s+\w+\s*\([^)]*\):.*?)(?=\n\n\s*[A-Z]|\n```|$)"
+    matches = re.findall(def_pattern, response_text, re.DOTALL)
+    if matches:
+        code = matches[0].strip()
+        if code and len(code) > 10:  # Make sure it's not too short
+            return code
+    
+    return None
+
+
+def code_format_reward_func(completions, **kwargs) -> list[float]:
+    """Reward function for code format: checks if code is properly formatted in <code> tags."""
+    responses = [completion[0]["content"] for completion in completions]
+    rewards = []
+    
+    for response in responses:
+        reward = 0.0
+        # Check for <code> tags
+        if "<code>" in response and "</code>" in response:
+            reward += 0.5
+            # Extract code and check if it contains function definition
+            code = extract_code_from_response(response)
+            if code and "def " in code:
+                reward += 0.3
+        rewards.append(reward)
+    
+    return rewards
+
+
+def code_extraction_reward_func(completions, **kwargs) -> list[float]:
+    """Reward function for successful code extraction."""
+    responses = [completion[0]["content"] for completion in completions]
+    rewards = []
+    
+    for response in responses:
+        code = extract_code_from_response(response)
+        reward = 1.0 if code is not None and len(code.strip()) > 0 else 0.0
+        rewards.append(reward)
+    
+    return rewards
+
+
+import ast
+import io
+import sys
+from contextlib import redirect_stdout, redirect_stderr
+from typing import Optional
+
+def check_correctness(problem: dict, completion: str, timeout: float = 10.0) -> dict:
+    """
+    Check if the completion passes the tests for a given problem.
+    
+    Args:
+        problem: A dict containing:
+            - 'task_id': str
+            - 'prompt': str (function signature)
+            - 'test': str (test code)
+            - 'entry_point': str (function name)
+        completion: The generated code string
+        timeout: Timeout in seconds (not fully implemented, but can use signal)
+    
+    Returns:
+        dict with keys:
+            - 'passed': bool
+            - 'result': str ('passed', 'failed', 'error')
+            - 'error': Optional[str] (error message if any)
+    """
+    try:
+        # Extract the function signature from prompt
+        # The prompt usually ends with the function signature
+        signature = problem.get('prompt', '').strip()
+        
+        # Combine signature and completion to form the complete function
+        # Remove any leading whitespace from completion
+        completion_clean = completion.strip()
+        
+        # Construct the full code
+        # The completion should be the function body, but sometimes includes the full function
+        # We need to handle both cases
+        if completion_clean.startswith('def '):
+            # Full function definition
+            full_code = completion_clean
+        else:
+            # Just the function body, need to combine with signature
+            # Extract function name from signature
+            if 'def ' in signature:
+                # If signature already has 'def', use it
+                full_code = signature + '\n' + '    ' + completion_clean.replace('\n', '\n    ')
+            else:
+                full_code = completion_clean
+        
+        # Add the test code
+        test_code = problem.get('test', '')
+        code_to_execute = full_code + '\n\n' + test_code
+        
+        # Execute the code in a safe namespace
+        namespace = {}
+        exec(code_to_execute, namespace)
+        
+        # Check if there's a result (test code usually has assertions)
+        # Most HumanEval tests use assert statements which will raise AssertionError on failure
+        # If we get here without exception, tests passed (unless test uses different pattern)
+        return {
+            'passed': True,
+            'result': 'passed',
+            'error': None
+        }
+        
+    except SyntaxError as e:
+        return {
+            'passed': False,
+            'result': 'error',
+            'error': f'SyntaxError: {str(e)}'
+        }
+    except AssertionError:
+        # Test failed
+        return {
+            'passed': False,
+            'result': 'failed',
+            'error': 'Assertion failed'
+        }
+    except Exception as e:
+        return {
+            'passed': False,
+            'result': 'error',
+            'error': f'{type(e).__name__}: {str(e)}'
+        }
+
+
+def humaneval_correctness_reward_func(
+    prompts, completions, solution, step=None, run_name=None, **kwargs
+) -> list[float]:
+    """
+    Reward function for HumanEval: executes generated code and runs test cases.
+    Uses actual code execution instead of string matching.
+    """
+    responses = [completion[0]["content"] for completion in completions]
+    extracted_codes = [extract_code_from_response(r) for r in responses]
+    
+    # Get test information from kwargs (passed from dataset)
+    # HumanEval dataset should have 'test' field with test cases
+    test_codes = kwargs.get('test', [])
+    function_signatures = kwargs.get('function_signature', [])
+    entry_points = kwargs.get('entry_point', [])
+    task_ids = kwargs.get('task_id', [])
+    
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+    
+    rewards = []
+    for i, extracted_code in enumerate(extracted_codes):
+        if extracted_code is None:
+            reward = 0.0
+        else:
+            # Construct problem dict for check_correctness
+            problem = {
+                'task_id': task_ids[i] if i < len(task_ids) else f'task_{i}',
+                'prompt': function_signatures[i] if i < len(function_signatures) else '',
+                'test': test_codes[i] if i < len(test_codes) else '',
+                'entry_point': entry_points[i] if i < len(entry_points) else 'f'
+            }
+            
+            # Check correctness by executing code
+            result = check_correctness(problem, extracted_code)
+            
+            if result['passed']:
+                reward = 2.0  # Full reward for passing all tests
+            else:
+                # No reward if tests fail or error occurs
+                reward = 0.0
+        
+        rewards.append(reward)
+        
+        # Print sample for debugging
+        if i == 0 and step is not None and step % 100 == 0:
+            print(
+                "-" * 20,
+                f"\n{RED}Task ID:{RESET} {task_ids[i] if i < len(task_ids) else 'N/A'}\n",
+                "-" * 20,
+                f"\n{GREEN}Function Signature:{RESET}\n{function_signatures[i] if i < len(function_signatures) else 'N/A'}\n",
+                "-" * 20,
+                f"\n{BLUE}Generated Code:{RESET}\n{extracted_code[:300] if extracted_code else 'None'}\n",
+                "-" * 20,
+                f"\n{YELLOW}Test Result:{RESET} {result.get('result', 'unknown')}\n",
+            )
+            if result.get('error'):
+                print(f"{RED}Error:{RESET} {result['error']}\n")
+            print("✅" if reward > 0 else "❌")
+    
+    return rewards

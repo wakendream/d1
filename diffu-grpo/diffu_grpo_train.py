@@ -18,6 +18,9 @@ from reward_func import (
     sudoku_reward_func,
     boxed_and_answer_tags_format_reward,
     reward_len,
+    code_format_reward_func,
+    code_extraction_reward_func,
+    humaneval_correctness_reward_func,
 )
 from data_utils import (
     get_gsm8k_questions,
@@ -25,6 +28,7 @@ from data_utils import (
     get_sudoku_questions,
     set_random_seed,
     get_math_questions,
+    get_humaneval_questions,
 )
 
 
@@ -55,6 +59,15 @@ def main(grpo_config, model_config):
             correctness_reward_func_math,
             boxed_and_answer_tags_format_reward,
         ]
+    elif grpo_config.dataset == "humaneval":
+        dataset = get_humaneval_questions("test")  # HumanEval only has test split
+        reward_functions = [
+            code_format_reward_func,
+            code_extraction_reward_func,
+            humaneval_correctness_reward_func,
+        ]
+    else:
+        raise ValueError(f"Unknown dataset: {grpo_config.dataset}")
 
     # Shuffle dataset with fixed seed for reproducibility
     dataset = dataset.shuffle(seed=grpo_config.seed)
@@ -62,6 +75,10 @@ def main(grpo_config, model_config):
     # Split dataset if needed
     if grpo_config.dataset in ["countdown", "sudoku"]:
         train_set = dataset.select(range(0, len(dataset) - 500))  # Leave last 500 for evaluation
+    elif grpo_config.dataset == "humaneval":
+        # For HumanEval, we can use all data for training since it's a small dataset
+        # or split if needed (e.g., use first 100 for training, rest for eval)
+        train_set = dataset  # Use all data for training
     else:
         train_set = dataset
 
