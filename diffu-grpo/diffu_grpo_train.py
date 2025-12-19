@@ -21,6 +21,7 @@ from reward_func import (
     code_format_reward_func,
     code_extraction_reward_func,
     humaneval_correctness_reward_func,
+    mbpp_correctness_reward_func,
 )
 from data_utils import (
     get_gsm8k_questions,
@@ -29,6 +30,7 @@ from data_utils import (
     set_random_seed,
     get_math_questions,
     get_humaneval_questions,
+    get_mbpp_questions,
 )
 
 
@@ -66,6 +68,13 @@ def main(grpo_config, model_config):
             code_extraction_reward_func,
             humaneval_correctness_reward_func,
         ]
+    elif grpo_config.dataset == "mbpp":
+        dataset = get_mbpp_questions("train")  # MBPP has train and test splits
+        reward_functions = [
+            code_format_reward_func,
+            code_extraction_reward_func,
+            mbpp_correctness_reward_func,
+        ]
     else:
         raise ValueError(f"Unknown dataset: {grpo_config.dataset}")
 
@@ -79,6 +88,9 @@ def main(grpo_config, model_config):
         # For HumanEval, we can use all data for training since it's a small dataset
         # or split if needed (e.g., use first 100 for training, rest for eval)
         train_set = dataset  # Use all data for training
+    elif grpo_config.dataset == "mbpp":
+        # For MBPP, use train split for training (already loaded as train split)
+        train_set = dataset  # Use all training data
     else:
         train_set = dataset
 

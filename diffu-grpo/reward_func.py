@@ -3,6 +3,32 @@ import re
 from math500_utils import remove_boxed, last_boxed_only_string, is_equiv, boxed_in_answer
 
 
+def extract_completion_content(completion) -> str:
+    """
+    Extract content from completion, handling both string and dict formats.
+    
+    Args:
+        completion: Can be either:
+            - A string: "content text"
+            - A list with dict: [{"role": "assistant", "content": "content text"}]
+            - A dict: {"role": "assistant", "content": "content text"}
+    
+    Returns:
+        str: The content text
+    """
+    if isinstance(completion, str):
+        return completion
+    elif isinstance(completion, list) and len(completion) > 0:
+        if isinstance(completion[0], dict) and "content" in completion[0]:
+            return completion[0]["content"]
+        elif isinstance(completion[0], str):
+            return completion[0]
+    elif isinstance(completion, dict) and "content" in completion:
+        return completion["content"]
+    # Fallback: try to convert to string
+    return str(completion)
+
+
 def extract_xml_answer(text: str) -> str:
     answer = text.split("<answer>")[-1]
     answer = answer.split("</answer>")[0]
@@ -16,8 +42,8 @@ def extract_hash_answer(text: str) -> str | None:
 
 
 def correctness_reward_func(prompts, completions, answer, step=None, run_name=None, **kwargs) -> list[float]:
-    responses = [completion[0]["content"] for completion in completions]
-    q = prompts[0][-1]["content"]
+    responses = [extract_completion_content(completion) for completion in completions]
+    q = prompts[0][-1]["content"] if isinstance(prompts[0], list) and len(prompts[0]) > 0 and isinstance(prompts[0][-1], dict) else str(prompts[0])
     extracted_responses = [extract_xml_answer(r) for r in responses]
 
     RED = "\033[91m"
@@ -309,7 +335,7 @@ def extract_code_from_response(response_text: str) -> str | None:
 
 def code_format_reward_func(completions, **kwargs) -> list[float]:
     """Reward function for code format: checks if code is properly formatted in <code> tags."""
-    responses = [completion[0]["content"] for completion in completions]
+    responses = [extract_completion_content(completion) for completion in completions]
     rewards = []
     
     for response in responses:
@@ -328,7 +354,7 @@ def code_format_reward_func(completions, **kwargs) -> list[float]:
 
 def code_extraction_reward_func(completions, **kwargs) -> list[float]:
     """Reward function for successful code extraction."""
-    responses = [completion[0]["content"] for completion in completions]
+    responses = [extract_completion_content(completion) for completion in completions]
     rewards = []
     
     for response in responses:
@@ -433,7 +459,7 @@ def humaneval_correctness_reward_func(
     Reward function for HumanEval: executes generated code and runs test cases.
     Uses actual code execution instead of string matching.
     """
-    responses = [completion[0]["content"] for completion in completions]
+    responses = [extract_completion_content(completion) for completion in completions]
     extracted_codes = [extract_code_from_response(r) for r in responses]
     
     # Get test information from kwargs (passed from dataset)
@@ -480,6 +506,137 @@ def humaneval_correctness_reward_func(
                 f"\n{RED}Task ID:{RESET} {task_ids[i] if i < len(task_ids) else 'N/A'}\n",
                 "-" * 20,
                 f"\n{GREEN}Function Signature:{RESET}\n{function_signatures[i] if i < len(function_signatures) else 'N/A'}\n",
+                "-" * 20,
+                f"\n{BLUE}Generated Code:{RESET}\n{extracted_code[:300] if extracted_code else 'None'}\n",
+                "-" * 20,
+                f"\n{YELLOW}Test Result:{RESET} {result.get('result', 'unknown')}\n",
+            )
+            if result.get('error'):
+                print(f"{RED}Error:{RESET} {result['error']}\n")
+            print("✅" if reward > 0 else "❌")
+    
+    return rewards
+
+
+def check_correctness_mbpp(problem: dict, completion: str, timeout: float = 10.0) -> dict:
+    """
+    Check if the completion passes the tests for a given MBPP problem.
+    Similar to check_correctness but adapted for MBPP format.
+    
+    Args:
+        problem: A dict containing:
+            - 'task_id': str
+            - 'test': str (combined test code with setup)
+            - 'test_setup_code': str (optional setup code)
+        completion: The generated code string
+        timeout: Timeout in seconds (not fully implemented)
+    
+    Returns:
+        dict with keys:
+            - 'passed': bool
+            - 'result': str ('passed', 'failed', 'error')
+            - 'error': Optional[str] (error message if any)
+    """
+    try:
+        completion_clean = completion.strip()
+        
+        # For MBPP, the completion should be a complete function or script
+        # Combine with test setup code if available
+        test_setup = problem.get('test_setup_code', '')
+        test_code = problem.get('test', '')
+        
+        # Construct the full code to execute
+        if test_setup:
+            full_code = test_setup + '\n\n' + completion_clean + '\n\n' + test_code
+        else:
+            full_code = completion_clean + '\n\n' + test_code
+        
+        # Execute the code in a safe namespace
+        namespace = {}
+        exec(full_code, namespace)
+        
+        # If we get here without exception, tests passed
+        return {
+            'passed': True,
+            'result': 'passed',
+            'error': None
+        }
+        
+    except SyntaxError as e:
+        return {
+            'passed': False,
+            'result': 'error',
+            'error': f'SyntaxError: {str(e)}'
+        }
+    except AssertionError:
+        # Test failed
+        return {
+            'passed': False,
+            'result': 'failed',
+            'error': 'Assertion failed'
+        }
+    except Exception as e:
+        return {
+            'passed': False,
+            'result': 'error',
+            'error': f'{type(e).__name__}: {str(e)}'
+        }
+
+
+def mbpp_correctness_reward_func(
+    prompts, completions, solution, step=None, run_name=None, **kwargs
+) -> list[float]:
+    """
+    Reward function for MBPP: executes generated code and runs test cases.
+    Uses actual code execution instead of string matching.
+    Similar to HumanEval but adapted for MBPP dataset structure.
+    """
+    responses = [extract_completion_content(completion) for completion in completions]
+    extracted_codes = [extract_code_from_response(r) for r in responses]
+    
+    # Get test information from kwargs (passed from dataset)
+    # MBPP dataset has 'test' field with combined test code
+    test_codes = kwargs.get('test', [])
+    task_ids = kwargs.get('task_id', [])
+    test_setup_codes = kwargs.get('test_setup_code', [])
+    
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+    
+    rewards = []
+    for i, extracted_code in enumerate(extracted_codes):
+        if extracted_code is None:
+            reward = 0.0
+            result = {'passed': False, 'result': 'error', 'error': 'No code extracted'}
+        else:
+            # Construct problem dict for check_correctness_mbpp
+            problem = {
+                'task_id': task_ids[i] if i < len(task_ids) else f'task_{i}',
+                'test': test_codes[i] if i < len(test_codes) else '',
+                'test_setup_code': test_setup_codes[i] if i < len(test_setup_codes) else ''
+            }
+            
+            # Check correctness by executing code
+            result = check_correctness_mbpp(problem, extracted_code)
+            
+            if result['passed']:
+                reward = 2.0  # Full reward for passing all tests
+            else:
+                # No reward if tests fail or error occurs
+                reward = 0.0
+        
+        rewards.append(reward)
+        
+        # Print sample for debugging
+        if i == 0 and step is not None and step % 100 == 0:
+            print(
+                "-" * 20,
+                f"\n{RED}Task ID:{RESET} {task_ids[i] if i < len(task_ids) else 'N/A'}\n",
+                "-" * 20,
+                f"\n{GREEN}Problem Text:{RESET}\n{kwargs.get('text', ['N/A'])[i] if i < len(kwargs.get('text', [])) else 'N/A'}\n",
                 "-" * 20,
                 f"\n{BLUE}Generated Code:{RESET}\n{extracted_code[:300] if extracted_code else 'None'}\n",
                 "-" * 20,

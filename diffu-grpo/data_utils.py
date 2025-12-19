@@ -141,6 +141,16 @@ Your reasoning here
 Your complete function implementation
 </code>"""
 
+MBPP_SYSTEM_PROMPT = """You are a Python expert. You will be given a problem description and a function signature. Write the complete function implementation in Python that solves the problem. Make sure to include any necessary imports and helper functions.
+
+Respond in the following format:
+<reasoning>
+Your reasoning here
+</reasoning>
+<code>
+Your complete function implementation
+</code>"""
+
 
 def get_humaneval_questions(split="test") -> Dataset:
     """
@@ -164,3 +174,52 @@ def get_humaneval_questions(split="test") -> Dataset:
             "entry_point": x.get("entry_point", "f"),  # 添加函数名
         }
     )
+
+
+def get_mbpp_questions(split="train") -> Dataset:
+    """
+    Load MBPP (Mostly Basic Python Problems) dataset for code generation.
+    MBPP has both 'train' and 'test' splits.
+    """
+    data = load_dataset("mbpp", split=split)
+    
+    def process_mbpp_example(x):
+        # Extract function signature from code if available
+        code = x.get("code", "")
+        function_signature = ""
+        if "def " in code:
+            # Extract the function definition line
+            lines = code.split("\n")
+            for line in lines:
+                if line.strip().startswith("def "):
+                    function_signature = line.strip()
+                    break
+        
+        # Combine test_list into a single test string
+        test_list = x.get("test_list", [])
+        test_code = x.get("test_setup_code", "") + "\n\n" if x.get("test_setup_code") else ""
+        if test_list:
+            test_code += "\n".join(test_list)
+        
+        # Create prompt content
+        prompt_content = f"{MBPP_SYSTEM_PROMPT}\n\nProblem:\n{x['text']}"
+        if function_signature:
+            prompt_content += f"\n\nFunction signature:\n{function_signature}"
+        
+        return {
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": prompt_content,
+                },
+            ],
+            "solution": code,
+            "text": x.get("text", ""),
+            "task_id": str(x.get("task_id", "")),
+            "test": test_code,  # Combined test code
+            "test_list": test_list,  # Keep original test list
+            "test_setup_code": x.get("test_setup_code", ""),
+            "entry_point": function_signature.split("(")[0].replace("def ", "").strip() if function_signature else "f",
+        }
+    
+    return data.map(process_mbpp_example)
