@@ -13,7 +13,7 @@ lora_dropout: 0.05
 peft_task_type: CAUSAL_LM
 
 # GRPOConfig
-dataset: gsm8k
+dataset: mbpp
 seed: 42
 bf16: true
 
@@ -46,10 +46,9 @@ gradient_checkpointing: false
 gradient_checkpointing_kwargs:
   use_reentrant: false
 
-resume_from_checkpoint: /root/d1/diffu-grpo/checkpoints/gsm8k_base_bs12/checkpoint-1400
-
-run_name: gsm_sft_bs12
-output_dir: /checkpoints/gsm_sft_bs12  # <-- Replace with desired output directory
+resume_from_checkpoint: False
+run_name: mbpp_base_bs12
+output_dir: /root/d1/diffu-grpo/checkpoints/mbpp_base_bs12 # <-- Replace with desired output directory
 
 # Parameters for saving checkpoints
 save_steps: 100

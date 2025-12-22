@@ -368,6 +368,7 @@ def code_extraction_reward_func(completions, **kwargs) -> list[float]:
 import ast
 import io
 import sys
+import signal
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional
 
@@ -518,7 +519,12 @@ def humaneval_correctness_reward_func(
     return rewards
 
 
-def check_correctness_mbpp(problem: dict, completion: str, timeout: float = 10.0) -> dict:
+def _timeout_handler(signum, frame):
+    """Signal handler for timeout"""
+    raise TimeoutError("Code execution timed out")
+
+
+def check_correctness_mbpp(problem: dict, completion: str, timeout: float = 20.0) -> dict:
     """
     Check if the completion passes the tests for a given MBPP problem.
     Similar to check_correctness but adapted for MBPP format.
@@ -529,7 +535,7 @@ def check_correctness_mbpp(problem: dict, completion: str, timeout: float = 10.0
             - 'test': str (combined test code with setup)
             - 'test_setup_code': str (optional setup code)
         completion: The generated code string
-        timeout: Timeout in seconds (not fully implemented)
+        timeout: Timeout in seconds (default: 10.0)
     
     Returns:
         dict with keys:
@@ -537,50 +543,74 @@ def check_correctness_mbpp(problem: dict, completion: str, timeout: float = 10.0
             - 'result': str ('passed', 'failed', 'error')
             - 'error': Optional[str] (error message if any)
     """
+    # Set up timeout handler
+    old_handler = None
     try:
-        completion_clean = completion.strip()
+        if timeout > 0:
+            # Set signal handler for timeout
+            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(int(timeout))
         
-        # For MBPP, the completion should be a complete function or script
-        # Combine with test setup code if available
-        test_setup = problem.get('test_setup_code', '')
-        test_code = problem.get('test', '')
-        
-        # Construct the full code to execute
-        if test_setup:
-            full_code = test_setup + '\n\n' + completion_clean + '\n\n' + test_code
-        else:
-            full_code = completion_clean + '\n\n' + test_code
-        
-        # Execute the code in a safe namespace
-        namespace = {}
-        exec(full_code, namespace)
-        
-        # If we get here without exception, tests passed
-        return {
-            'passed': True,
-            'result': 'passed',
-            'error': None
-        }
-        
-    except SyntaxError as e:
-        return {
-            'passed': False,
-            'result': 'error',
-            'error': f'SyntaxError: {str(e)}'
-        }
-    except AssertionError:
-        # Test failed
-        return {
-            'passed': False,
-            'result': 'failed',
-            'error': 'Assertion failed'
-        }
-    except Exception as e:
-        return {
-            'passed': False,
-            'result': 'error',
-            'error': f'{type(e).__name__}: {str(e)}'
-        }
+        try:
+            completion_clean = completion.strip()
+            
+            # For MBPP, the completion should be a complete function or script
+            # Combine with test setup code if available
+            test_setup = problem.get('test_setup_code', '')
+            test_code = problem.get('test', '')
+            
+            # Construct the full code to execute
+            if test_setup:
+                full_code = test_setup + '\n\n' + completion_clean + '\n\n' + test_code
+            else:
+                full_code = completion_clean + '\n\n' + test_code
+            
+            # Execute the code in a safe namespace
+            namespace = {}
+            exec(full_code, namespace)
+            
+            # Cancel alarm if execution completes successfully
+            if timeout > 0:
+                signal.alarm(0)
+            
+            # If we get here without exception, tests passed
+            return {
+                'passed': True,
+                'result': 'passed',
+                'error': None
+            }
+            
+        except TimeoutError:
+            return {
+                'passed': False,
+                'result': 'error',
+                'error': f'Timeout: Code execution exceeded {timeout} seconds'
+            }
+        except SyntaxError as e:
+            return {
+                'passed': False,
+                'result': 'error',
+                'error': f'SyntaxError: {str(e)}'
+            }
+        except AssertionError:
+            # Test failed
+            return {
+                'passed': False,
+                'result': 'failed',
+                'error': 'Assertion failed'
+            }
+        except Exception as e:
+            return {
+                'passed': False,
+                'result': 'error',
+                'error': f'{type(e).__name__}: {str(e)}'
+            }
+    finally:
+        # Restore original signal handler and cancel alarm
+        if timeout > 0:
+            signal.alarm(0)
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, old_handler)
 
 
 def mbpp_correctness_reward_func(

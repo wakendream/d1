@@ -6,6 +6,10 @@ export HF_ENDPOINT=https://hf-mirror.com
 export LOGDIR=checkpoints
 mkdir -p $LOGDIR
 
+export WANDB_INIT_TIMEOUT=300  # 5 minutes (default is 60 seconds)
+export WANDB_CONSOLE=wrap
+export WANDB_START_METHOD=thread
+
 DATASET="mbpp"
 RUN_NAME=${DATASET}_base_bs12
 MODEL_PATH=/shared/LLaDA-8B-Instruct  # Update this to your model path
@@ -23,7 +27,7 @@ accelerate launch \
     --dataset $DATASET \
     --run_name $RUN_NAME \
     --output_dir checkpoints/$RUN_NAME \
-    --max_completion_length 512 \
+    --max_completion_length 256 \
     --block_length 64 \
     --diffusion_steps 128
 
